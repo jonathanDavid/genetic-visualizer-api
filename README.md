@@ -40,6 +40,21 @@ the algorithm negotiate that trade-off, and the baselines endpoint (random vs
 greedy nearest-store) gives the audience an intuition anchor: the GA visibly
 beats both.
 
+**Custom scenario (real-order integration).** For the retail app to optimize
+an *actual* order, `problemConfig` may carry an explicit `scenario` object
+(`{ customer, stores:[{id,name,x,y,inventory:[{sku,priceCents,stock}]}],
+shoppingList:[{sku,qty}] }`). When present it is used **verbatim** instead of
+the seed generator; every shopping-list SKU must be stocked by at least one
+store or the request is rejected with `422` and a clear message. `qty`
+participates in `itemCostCents` (Σ qty · chosen-store price), the customer need
+not sit at the origin, and the genome / fitness / `renderSpec` / metric shapes
+are identical to the seeded case. `POST /api/scenario/baselines` accepts the
+same explicit scenario in its body and returns `{ random, greedy }` so a caller
+can benchmark its own world. Meaningful optimization needs headroom — items
+available in multiple stores — so a naive per-item-nearest plan scatters across
+stops and the GA can consolidate; a single-store order is honestly "already
+optimal".
+
 ### Allocation (v1)
 
 A genome is an assignment of items → shelf slots (a permutation when
@@ -109,11 +124,13 @@ Base path `/api`.
 | `POST` | `/api/runs/:id/stop` | `200 { status }` |
 | `GET` | `/api/problems` | problem metadata for building UI controls |
 | `GET` | `/api/scenario?seed=&stores=&products=&needs=` | the deterministic pickup scenario (map + inventories + shopping list) |
-| `GET` | `/api/scenario/baselines?seed=&...` | `{ random, greedy }` reference plans, same metric shape as the GA |
+| `GET` | `/api/scenario/baselines?seed=&...` | `{ random, greedy }` reference plans for a seeded scenario |
+| `POST` | `/api/scenario/baselines` | `{ random, greedy }` for an explicit scenario in the body |
 | `WS` | `/api/runs/:id/stream` | one `generation` message per generation + final `done` |
 
 Runs accept `"problem": "pickup"` with `problemConfig: { seed, stores,
-products, needs }` (stores 3–12, products 6–30, needs 3–10), or
+products, needs }` (stores 3–12, products 6–30, needs 3–10) — or an explicit
+`problemConfig: { scenario: {…} }` to optimize a real order verbatim — or
 `"problem": "allocation"` with `{ items, slots }`. The pickup `renderSpec` is
 `{ selection: {sku→storeId}, route: [storeId…], routeKm, itemCostCents,
 storesUsed, travelMinutes }` — everything the map/story UI needs.
