@@ -1,10 +1,11 @@
 # Genetic-Algorithm Visualizer — API
 
-Streaming genetic-algorithm backend that optimizes **store-item allocation**:
-place N catalog items into M shelf slots to maximize expected sales, subject to
-capacity and category-adjacency constraints. Each run streams **every
-generation** over a WebSocket so the web client can animate a population
-converging toward an optimal shelf layout.
+Streaming genetic-algorithm backend with two built-in problems. The flagship
+demo is **grocery pickup** — pick which store supplies each item on a shopping
+list, trading route length against basket price against number of stops — and
+the original **store-item allocation** problem stays available. Each run
+streams **every generation** over a WebSocket so the web client can animate a
+population converging toward the optimal plan.
 
 > This is a portfolio reconstruction of the genetic-algorithm ML services I
 > built at **Xpectrum** to optimize store-item allocation. The production
@@ -12,7 +13,34 @@ converging toward an optimal shelf layout.
 > the GA core faithful and wrapped it in a live, hypnotic visualization so the
 > work is actually *watchable*.
 
-## Problem
+## Problems
+
+### Pickup (v2, the flagship demo)
+
+A deterministic retail scenario is generated from a seed: M stores placed on
+a 2-D km map around a customer at the origin (realistic names — "Mercado
+Norte", "Super Costa"…), P grocery products with COP prices varying ±15% per
+store, per-store inventories with stock, and a shopping list of N needed
+products that is guaranteed coverable. A genome has one gene per needed item:
+the index of the store that supplies it (only stores stocking the item are
+valid; foreign genes are repaired). Fitness to maximize:
+
+```
+fitness(genome) = -( routeKm · kmCost  +  itemCostCents · centsScale  +  storesUsed · stopPenalty )
+```
+
+where the route is customer → selected stores in nearest-neighbor order →
+customer, and travel time assumes 30 km/h urban speed.
+
+**Why this scenario teaches.** A visitor who has never seen a GA can read the
+map: dots are stores, the list is what I need, the line is my trip. The three
+cost terms pull against each other — the cheapest basket wants many stores,
+the shortest trip wants one — so watching the fitness line climb *is* watching
+the algorithm negotiate that trade-off, and the baselines endpoint (random vs
+greedy nearest-store) gives the audience an intuition anchor: the GA visibly
+beats both.
+
+### Allocation (v1)
 
 A genome is an assignment of items → shelf slots (a permutation when
 `items == slots`). Fitness is fully vectorized over the whole population:
@@ -38,20 +66,24 @@ flowchart LR
         UI[Controls + Canvas]
     end
     subgraph API[genetic-visualizer-api]
-        REST[FastAPI REST\nPOST/GET/stop]
+        REST[FastAPI REST\nruns + scenario + baselines]
         REG[(Run Registry\n+ stop events)]
         WS[WebSocket\n/api/runs/:id/stream]
         RUN[runner.py\nasync generator + throttle]
         ENG[engine.py\nGA loop]
-        PROB[problem.py\nAllocationProblem]
+        PROB[Problem protocol\nAllocationProblem / PickupProblem]
+        SCEN[scenario.py\nseeded retail world]
     end
 
+    UI -- "GET /api/scenario (+baselines)" --> REST
     UI -- "POST /api/runs" --> REST
     REST -- create --> REG
+    REST -- generate --> SCEN
     UI -- "WS connect" --> WS
     WS -- subscribe --> RUN
     RUN -- run in worker thread --> ENG
     ENG -- delegates ops --> PROB
+    PROB -- built from --> SCEN
     ENG -- GenerationResult --> RUN
     RUN -- "{type, payload}" --> WS
     WS -- "generation / done" --> UI
@@ -76,7 +108,15 @@ Base path `/api`.
 | `GET` | `/api/runs/:id` | `{ runId, status, params, bestFitness }` |
 | `POST` | `/api/runs/:id/stop` | `200 { status }` |
 | `GET` | `/api/problems` | problem metadata for building UI controls |
+| `GET` | `/api/scenario?seed=&stores=&products=&needs=` | the deterministic pickup scenario (map + inventories + shopping list) |
+| `GET` | `/api/scenario/baselines?seed=&...` | `{ random, greedy }` reference plans, same metric shape as the GA |
 | `WS` | `/api/runs/:id/stream` | one `generation` message per generation + final `done` |
+
+Runs accept `"problem": "pickup"` with `problemConfig: { seed, stores,
+products, needs }` (stores 3–12, products 6–30, needs 3–10), or
+`"problem": "allocation"` with `{ items, slots }`. The pickup `renderSpec` is
+`{ selection: {sku→storeId}, route: [storeId…], routeKm, itemCostCents,
+storesUsed, travelMinutes }` — everything the map/story UI needs.
 
 WebSocket messages are `{ type, payload }`:
 
@@ -97,6 +137,7 @@ never misses a generation and nothing is buffered without a reader.
 | **Worker thread for the CPU-bound GA, asyncio for I/O** | The GA is numpy-heavy CPU work; running it in the event loop would stall every other connection. A thread + `asyncio.Queue` keeps the loop responsive and streaming smooth. numpy releases the GIL for the array ops that dominate. | Pure-Python sections still hold the GIL; true multi-run parallelism needs processes (see below). |
 | **Elitism guarantees monotonic best-fitness** | Carrying the top-k genomes untouched means the best solution can never regress — visually the "best" line only ever climbs, which is both correct and satisfying to watch. | Slightly higher selection pressure; mitigated by tournament/roulette diversity. |
 | **In-memory run registry** | Zero infra for a single-process portfolio demo; stop is a `threading.Event`. | Runs don't survive a restart and don't scale past one process (see below). |
+| **Deterministic seeded scenario + baselines** | The pickup world is a pure function of `(seed, stores, products, needs)`, so REST, GA runs and the web's demo mode all agree on the same map, and random/greedy baselines give visitors an intuition anchor the GA visibly beats. | Scenario realism is bounded by the generator; nearest-neighbor routing is a heuristic (fine at ≤12 stops, and identical for GA and baselines so comparisons stay fair). |
 
 ## What I'd change at scale
 
@@ -140,10 +181,13 @@ app/                FastAPI app, routers, run registry, pydantic schemas
   main.py           app wiring + CORS + health
   schemas.py        RunParams and response models (pydantic v2)
   registry.py       in-memory run registry with stop events
-  routers/          runs (REST + WS) and problems
+  routers/          runs (REST + WS), problems, scenario + baselines
 ga/                 the genetic-algorithm core
   problem.py        Problem protocol + AllocationProblem (vectorized fitness)
+  scenario.py       deterministic seeded retail world for the pickup problem
+  pickup.py         PickupProblem: repair, NN routing, baselines, renderSpec
   engine.py         seedable GA loop (tournament/roulette, crossover, elitism)
   runner.py         async generator: worker thread → asyncio.Queue → throttle
-tests/              pytest: engine invariants, problem validity, stream protocol
+tests/              pytest: engine invariants, problem validity, scenario
+                    determinism, baselines, stream protocol
 ```
