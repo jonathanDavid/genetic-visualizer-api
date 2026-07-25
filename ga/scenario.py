@@ -98,6 +98,11 @@ class Store:
 class NeededProduct:
     sku: str
     name: str
+    qty: int = 1
+
+
+class ScenarioValidationError(ValueError):
+    """Raised when an explicit scenario is malformed or not coverable."""
 
 
 @dataclass(slots=True)
@@ -143,12 +148,107 @@ class Scenario:
                 }
                 for s in self.stores
             ],
-            "shoppingList": [{"sku": n.sku, "name": n.name} for n in self.shopping_list],
+            "shoppingList": [
+                {"sku": n.sku, "name": n.name, "qty": n.qty} for n in self.shopping_list
+            ],
         }
 
 
 def travel_minutes(km: float) -> float:
     return km / URBAN_SPEED_KMH * 60.0
+
+
+def _require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ScenarioValidationError(message)
+
+
+def scenario_from_dict(data: Any) -> Scenario:
+    """Build a :class:`Scenario` from an explicit client-supplied object.
+
+    Used verbatim (no seeding) so the retail app can optimize a real order
+    against real inventory. Validates structure and, crucially, that every
+    shopping-list SKU is stocked by at least one store — otherwise the order
+    is not coverable and we surface a clear 422 instead of a silent bad plan.
+    Customer defaults to the origin; each store's ``distanceKm`` is derived
+    from the customer position.
+    """
+    _require(isinstance(data, dict), "scenario must be an object")
+
+    cust = data.get("customer") or {"x": 0.0, "y": 0.0}
+    _require(isinstance(cust, dict), "scenario.customer must be an object")
+    cx, cy = float(cust.get("x", 0.0)), float(cust.get("y", 0.0))
+
+    raw_stores = data.get("stores")
+    _require(isinstance(raw_stores, list) and len(raw_stores) >= 1,
+             "scenario.stores must be a non-empty list")
+
+    stores: list[Store] = []
+    seen_ids: set[str] = set()
+    for k, raw in enumerate(raw_stores):
+        _require(isinstance(raw, dict), f"stores[{k}] must be an object")
+        sid = str(raw.get("id") or f"s{k + 1}")
+        _require(sid not in seen_ids, f"duplicate store id {sid!r}")
+        seen_ids.add(sid)
+        x, y = float(raw.get("x", 0.0)), float(raw.get("y", 0.0))
+        raw_inv = raw.get("inventory") or []
+        _require(isinstance(raw_inv, list), f"stores[{k}].inventory must be a list")
+        inventory: list[InventoryItem] = []
+        for j, it in enumerate(raw_inv):
+            _require(isinstance(it, dict), f"stores[{k}].inventory[{j}] must be an object")
+            sku = it.get("sku")
+            _require(bool(sku), f"stores[{k}].inventory[{j}].sku is required")
+            price = it.get("priceCents")
+            _require(price is not None, f"stores[{k}].inventory[{j}].priceCents is required")
+            price = int(price)
+            _require(price >= 0, f"stores[{k}].inventory[{j}].priceCents must be >= 0")
+            inventory.append(
+                InventoryItem(
+                    sku=str(sku),
+                    name=str(it.get("name") or sku),
+                    price_cents=price,
+                    stock=int(it.get("stock", 0)),
+                )
+            )
+        stores.append(
+            Store(
+                id=sid,
+                name=str(raw.get("name") or sid),
+                x=x,
+                y=y,
+                distance_km=round(math.hypot(x - cx, y - cy), 3),
+                inventory=inventory,
+            )
+        )
+
+    raw_list = data.get("shoppingList")
+    _require(isinstance(raw_list, list) and len(raw_list) >= 1,
+             "scenario.shoppingList must be a non-empty list")
+
+    shopping_list: list[NeededProduct] = []
+    for k, raw in enumerate(raw_list):
+        _require(isinstance(raw, dict), f"shoppingList[{k}] must be an object")
+        sku = raw.get("sku")
+        _require(bool(sku), f"shoppingList[{k}].sku is required")
+        qty = int(raw.get("qty", 1))
+        _require(qty >= 1, f"shoppingList[{k}].qty must be >= 1")
+        name = raw.get("name")
+        if not name:  # borrow the catalog name from any store that stocks it
+            name = next(
+                (it.name for s in stores for it in s.inventory if it.sku == sku),
+                str(sku),
+            )
+        shopping_list.append(NeededProduct(sku=str(sku), name=str(name), qty=qty))
+
+    # Coverage: the heart of the validation — an uncoverable order is a 422.
+    scenario = Scenario(seed=-1, customer=(cx, cy), stores=stores, shopping_list=shopping_list)
+    uncoverable = [n.sku for n in shopping_list if not scenario.stores_stocking(n.sku)]
+    _require(
+        not uncoverable,
+        "shopping list is not coverable: no store stocks "
+        + ", ".join(sorted(set(uncoverable))),
+    )
+    return scenario
 
 
 def generate_scenario(
@@ -219,7 +319,9 @@ def generate_scenario(
 
     # --- shopping list, guaranteed coverable -------------------------------
     needed = rng.choice(products, size=needs, replace=False)
-    shopping_list = [NeededProduct(sku=skus[p], name=catalog[p][0]) for p in needed.tolist()]
+    shopping_list = [
+        NeededProduct(sku=skus[p], name=catalog[p][0], qty=1) for p in needed.tolist()
+    ]
     for p in needed.tolist():
         sku = skus[p]
         if not any(s.stocks(sku) for s in store_objs):

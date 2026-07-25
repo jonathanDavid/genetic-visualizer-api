@@ -24,7 +24,12 @@ from typing import Any
 
 import numpy as np
 
-from .scenario import Scenario, generate_scenario, travel_minutes
+from .scenario import (
+    Scenario,
+    generate_scenario,
+    scenario_from_dict,
+    travel_minutes,
+)
 
 # Cost weights, in "fitness points". A typical 6-store scenario yields routes
 # of 5-30 km and baskets of a few million COP cents, so with these weights all
@@ -53,6 +58,8 @@ class PickupProblem:
         needs = scenario.shopping_list
         self.genome_length = len(needs)
         self._skus = [n.sku for n in needs]
+        # Per-item requested quantity — it multiplies the chosen store's price.
+        self._qty = np.asarray([n.qty for n in needs], dtype=np.float64)
 
         # valid_stores[i]: store indices stocking needed item i (never empty —
         # the generator guarantees coverage).
@@ -74,6 +81,9 @@ class PickupProblem:
                 self._valid_mask[s, i] = True
 
         self._coords = np.asarray([[s.x, s.y] for s in scenario.stores])
+        # The route starts and ends at the customer, which need not be the
+        # origin for an explicit (client-supplied) scenario.
+        self._customer = np.asarray(scenario.customer, dtype=np.float64)
         self._route_cache: dict[frozenset[int], tuple[list[int], float]] = {}
 
     # ------------------------------------------------------------------ #
@@ -108,8 +118,9 @@ class PickupProblem:
         n = pop.shape[0]
         item_idx = np.arange(self.genome_length)
 
-        # Basket cost: vectorized gather over the whole population.
-        cost_cents = self._price[pop, item_idx].sum(axis=1)
+        # Basket cost: vectorized gather over the whole population, each
+        # item's price multiplied by its requested quantity.
+        cost_cents = (self._price[pop, item_idx] * self._qty).sum(axis=1)
 
         out = np.empty(n, dtype=np.float64)
         for r in range(n):
@@ -150,7 +161,7 @@ class PickupProblem:
         genome = self.repair(genome)[0]
         route_order, route_km = self._route(frozenset(genome.tolist()))
         item_idx = np.arange(self.genome_length)
-        cost_cents = int(self._price[genome, item_idx].sum())
+        cost_cents = int((self._price[genome, item_idx] * self._qty).sum())
         return {
             "selection": {
                 self._skus[i]: self.scenario.stores[int(genome[i])].id
@@ -218,7 +229,7 @@ class PickupProblem:
         if cached is not None:
             return cached
         remaining = set(stores_used)
-        pos = np.zeros(2)
+        pos = self._customer
         order: list[int] = []
         km = 0.0
         while remaining:
@@ -229,15 +240,24 @@ class PickupProblem:
             pos = self._coords[pick]
             order.append(pick)
             remaining.remove(pick)
-        km += float(np.linalg.norm(pos))  # back to the customer at the origin
+        km += float(np.linalg.norm(pos - self._customer))  # back to the customer
         result = (order, km)
         self._route_cache[stores_used] = result
         return result
 
 
 def build_pickup_problem(config: dict[str, Any] | None, fallback_seed: int) -> PickupProblem:
-    """Materialize a PickupProblem from RunParams' ``problemConfig``."""
+    """Materialize a PickupProblem from RunParams' ``problemConfig``.
+
+    When ``config["scenario"]`` is present it is used verbatim (the retail
+    integration optimizing a real order); otherwise the seed-based generator
+    produces the demo world. An explicit scenario is validated for coverage
+    and raises :class:`~ga.scenario.ScenarioValidationError` on failure.
+    """
     config = config or {}
+    explicit = config.get("scenario")
+    if explicit is not None:
+        return PickupProblem(scenario_from_dict(explicit))
     scenario = generate_scenario(
         seed=int(config.get("seed", fallback_seed)),
         stores=int(config.get("stores", 6)),
