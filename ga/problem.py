@@ -247,8 +247,20 @@ def build_problem(name: str, config: dict[str, Any] | None, seed: int) -> Proble
         items = int(config.get("items", 40))
         slots = int(config.get("slots", 40))
         return AllocationProblem(items=items, slots=slots, seed=seed)
+    if name == "pickup":
+        from .pickup import build_pickup_problem
+
+        return build_pickup_problem(config, fallback_seed=seed)
     raise ValueError(f"unknown problem: {name!r}")
 
 
+# Imported at the bottom to keep the protocol/allocation definitions above it;
+# pickup only depends on scenario.py, so there is no import cycle.
+from .pickup import PickupProblem  # noqa: E402
+from .scenario import generate_scenario  # noqa: E402
+
 #: Registry powering ``GET /api/problems``.
-PROBLEMS: dict[str, Problem] = {"allocation": AllocationProblem()}
+PROBLEMS: dict[str, Problem] = {
+    "allocation": AllocationProblem(),
+    "pickup": PickupProblem(generate_scenario()),
+}
