@@ -1,0 +1,66 @@
+name: API docs to GitHub Pages
+
+# The OpenAPI spec is regenerated from the code on every push — the published
+# docs cannot drift from the implementation.
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Generate spec + Swagger UI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Generate openapi.json
+        run: python scripts/generate_openapi.py
+
+      - name: Assemble static site (self-hosted Swagger UI)
+        run: |
+          npm install --no-save swagger-ui-dist
+          mkdir -p site
+          cp docs-site/index.html site/
+          cp openapi.json site/
+          cp node_modules/swagger-ui-dist/swagger-ui.css site/
+          cp node_modules/swagger-ui-dist/swagger-ui-bundle.js site/
+          cp node_modules/swagger-ui-dist/swagger-ui-standalone-preset.js site/
+          touch site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

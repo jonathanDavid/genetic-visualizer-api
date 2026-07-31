@@ -17,6 +17,22 @@ app = FastAPI(
     title="Genetic-Algorithm Visualizer API",
     version="1.0.0",
     summary="Streaming genetic-algorithm backend for store-item allocation.",
+    description=(
+        "A numpy GA that solves a grocery-**pickup** problem — one shopping list, several "
+        "stores with their own stock and prices — and **streams every generation** to the "
+        "visualizer.\n\n"
+        "**The stream is a WebSocket** (OpenAPI cannot describe it, so it is documented "
+        "here): connect to `ws://…/api/runs/{runId}/stream` after `POST /api/runs`; messages "
+        "are `{type: 'progress'|'done'|'error', payload}` where progress carries the "
+        "generation number, best fitness, and the best genome. One stream per run.\n\n"
+        "Docs are regenerated from this code on every push — they cannot drift."
+    ),
+    openapi_tags=[
+        {"name": "runs", "description": "Run lifecycle: create, inspect, stop (stream is the WebSocket above)"},
+        {"name": "problems", "description": "Problem metadata the UI builds its controls from"},
+        {"name": "scenario", "description": "The deterministic retail world + random/greedy baselines"},
+        {"name": "meta", "description": "Health probe"},
+    ],
 )
 
 _origins = os.getenv(

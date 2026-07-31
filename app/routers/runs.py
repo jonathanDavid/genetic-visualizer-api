@@ -32,7 +32,14 @@ def _build_spec(params: RunParams) -> RunSpec:
     return RunSpec(problem=problem, config=_engine_config(params))
 
 
-@router.post("/runs", status_code=status.HTTP_201_CREATED, response_model=CreateRunResponse)
+@router.post(
+    "/runs",
+    status_code=status.HTTP_201_CREATED,
+    response_model=CreateRunResponse,
+    summary="Create a run",
+    description="Validates the problem config and registers the run. Nothing computes until the WebSocket stream connects.",
+    responses={422: {"description": "Unknown problem or invalid problemConfig"}},
+)
 def create_run(params: RunParams) -> CreateRunResponse:
     try:
         build_problem(params.problem, params.problem_config, params.seed or 0)
@@ -42,7 +49,12 @@ def create_run(params: RunParams) -> CreateRunResponse:
     return CreateRunResponse(run_id=record.run_id)
 
 
-@router.get("/runs/{run_id}", response_model=RunStatusResponse)
+@router.get(
+    "/runs/{run_id}",
+    response_model=RunStatusResponse,
+    summary="Inspect a run",
+    responses={404: {"description": "Run not found"}},
+)
 def get_run(run_id: str) -> RunStatusResponse:
     record = registry.get(run_id)
     if record is None:
@@ -55,7 +67,12 @@ def get_run(run_id: str) -> RunStatusResponse:
     )
 
 
-@router.post("/runs/{run_id}/stop")
+@router.post(
+    "/runs/{run_id}/stop",
+    summary="Stop a running GA",
+    description="Sets the stop flag; the stream finishes the current generation and closes with a final `done` message.",
+    responses={404: {"description": "Run not found"}},
+)
 def stop_run(run_id: str) -> dict[str, str]:
     if not registry.stop(run_id):
         raise HTTPException(status_code=404, detail="run not found")

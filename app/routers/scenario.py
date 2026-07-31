@@ -29,7 +29,11 @@ def _baselines(problem: PickupProblem, seed: int) -> dict[str, Any]:
     }
 
 
-@router.get("/scenario")
+@router.get(
+    "/scenario",
+    summary="Generate the deterministic retail world",
+    description="Seeded, so the same seed always yields the same stores/products/needs - the map the GA optimizes over.",
+)
 def get_scenario(
     seed: int = Query(default=42, ge=0),
     stores: int = Query(default=6, ge=3, le=12),
@@ -39,7 +43,11 @@ def get_scenario(
     return generate_scenario(seed=seed, stores=stores, products=products, needs=needs).to_dict()
 
 
-@router.get("/scenario/baselines")
+@router.get(
+    "/scenario/baselines",
+    summary="Random + greedy reference plans (seeded scenario)",
+    description="Same metric shape the GA reports, powering the UI comparison mode.",
+)
 def get_baselines(
     seed: int = Query(default=42, ge=0),
     stores: int = Query(default=6, ge=3, le=12),
@@ -50,7 +58,12 @@ def get_baselines(
     return _baselines(PickupProblem(scenario), seed=seed)
 
 
-@router.post("/scenario/baselines")
+@router.post(
+    "/scenario/baselines",
+    summary="Baselines for a caller-provided scenario",
+    description="Send an explicit scenario document (e.g. a real order) and get the same random/greedy reference metrics.",
+    responses={422: {"description": "Scenario document fails validation"}},
+)
 def post_baselines(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
     """Baselines for a caller's explicit scenario (its own real order).
 

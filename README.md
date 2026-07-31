@@ -13,6 +13,11 @@ population converging toward the optimal plan.
 > the GA core faithful and wrapped it in a live, hypnotic visualization so the
 > work is actually *watchable*.
 
+**📖 API docs:** [interactive Swagger UI](https://jonathandavid.github.io/genetic-visualizer-api/)
+— the OpenAPI spec is regenerated from the FastAPI code on every push (the WebSocket
+stream, which OpenAPI can't express, is documented in the spec's description). Locally:
+`/docs` on the running server.
+
 ## Problems
 
 ### Pickup (v2, the flagship demo)
